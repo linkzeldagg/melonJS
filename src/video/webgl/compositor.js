@@ -48,34 +48,37 @@
             // local reference
             var gl = renderer.gl;
 
+            // canvas scale
+            this.canvasScaleFactor = renderer.canvasScaleFactor;
+
             /**
-             * The number of quads held in the batch
+             * The number of quads held in each batch
              * @name length
              * @memberOf me.WebGLRenderer.Compositor
-             * @type Number
+             * @type Array of Number
              * @readonly
              */
-            this.length = 0;
+            this.length = [];
 
             // Hash map of texture units
             this.units = [];
             /*
-             * XXX: The GLSL compiler pukes with "memory exhausted" when it is
-             * given long if-then-else chains.
-             *
-             * See: http://stackoverflow.com/questions/15828966/glsl-compile-error-memory-exhausted
-             *
-             * Workaround the problem by limiting the max texture support to 24.
-             * The magic number was determined by testing under different UAs.
-             * All Desktop UAs were capable of compiling with 27 fragment shader
-             * samplers. Using 24 seems like a reasonable compromise;
-             *
-             * 24 = 2^4 + 2^3
-             *
-             * As of October 2015, approximately 4.2% of all WebGL-enabled UAs
-             * support more than 24 max textures, according to
-             * http://webglstats.com/
-             */
+                * XXX: The GLSL compiler pukes with "memory exhausted" when it is
+                * given long if-then-else chains.
+                *
+                * See: http://stackoverflow.com/questions/15828966/glsl-compile-error-memory-exhausted
+                *
+                * Workaround the problem by limiting the max texture support to 24.
+                * The magic number was determined by testing under different UAs.
+                * All Desktop UAs were capable of compiling with 27 fragment shader
+                * samplers. Using 24 seems like a reasonable compromise;
+                *
+                * 24 = 2^4 + 2^3
+                *
+                * As of October 2015, approximately 4.2% of all WebGL-enabled UAs
+                * support more than 24 max textures, according to
+                * http://webglstats.com/
+                */
             this.maxTextures = Math.min(24, gl.getParameter(
                 gl.MAX_TEXTURE_IMAGE_UNITS
             ));
@@ -116,15 +119,15 @@
             /* eslint-disable */
             this.lineShader = me.video.shader.createShader(
                 this.gl,
-                (__LINE_VERTEX__)(),
-                (__LINE_FRAGMENT__)({
+                (function anonymous(ctx){var out='precision highp float;attribute vec2 aVertex;uniform mat3 uMatrix;void main(void){gl_Position=vec4((uMatrix*vec3(aVertex,1)).xy,0,1);}';return out;})(),
+                (function anonymous(ctx){var out='precision '+(ctx.precision)+' float;uniform vec4 uColor;void main(void){gl_FragColor=uColor;}';return out;})({
                     "precision"     : precision
                 })
             );
             this.quadShader = me.video.shader.createShader(
                 this.gl,
-                (__QUAD_VERTEX__)(),
-                (__QUAD_FRAGMENT__)({
+                (function anonymous(ctx){var out='precision highp float;attribute vec2 aVertex;attribute vec4 aColor;attribute float aTexture;attribute vec2 aRegion;uniform mat3 uMatrix;varying vec4 vColor;varying float vTexture;varying vec2 vRegion;void main(void){gl_Position=vec4((uMatrix*vec3(aVertex,1)).xy,0,1);vColor=vec4(aColor.rgb*aColor.a,aColor.a);vTexture=aTexture;vRegion=aRegion;}';return out;})(),
+                (function anonymous(ctx){var out='precision '+(ctx.precision)+' float;uniform sampler2D uSampler['+(ctx.maxTextures)+'];varying vec4 vColor;varying float vTexture;varying vec2 vRegion;void main(void){int texture=int(vTexture);if(texture==0){gl_FragColor=texture2D(uSampler[0],vRegion)*vColor;}';for(var i=1;i<ctx.maxTextures-1;i++){out+='else if(texture=='+(i)+'){gl_FragColor=texture2D(uSampler['+(i)+'],vRegion)*vColor;}';}out+='else{gl_FragColor=texture2D(uSampler['+(ctx.maxTextures-1)+'],vRegion)*vColor;}}';return out;})({
                     "precision"     : precision,
                     "maxTextures"   : this.maxTextures
                 })
@@ -134,63 +137,22 @@
             this.shader = this.quadShader.handle;
 
             // Stream buffer
-            this.sb = gl.createBuffer();
-            gl.bindBuffer(gl.ARRAY_BUFFER, this.sb);
-            gl.bufferData(
-                gl.ARRAY_BUFFER,
-                MAX_LENGTH * ELEMENT_OFFSET * ELEMENTS_PER_QUAD,
-                gl.STREAM_DRAW
-            );
+            this.sb = [];
 
-            this.sbSize = 256;
-            this.sbIndex = 0;
+            this.sbSize = [];
+            this.sbIndex = [];
 
             // Quad stream buffer
-            this.stream = new Float32Array(
-                this.sbSize * ELEMENT_SIZE * ELEMENTS_PER_QUAD
-            );
+            this.stream = [];
 
             // Index buffer
+            // Maybe this does not need to change ?
             this.ib = gl.createBuffer();
             gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.ib);
             gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, this.createIB(), gl.STATIC_DRAW);
 
-            // Bind attribute pointers for quad shader
-            gl.vertexAttribPointer(
-                this.quadShader.attributes.aVertex,
-                VERTEX_SIZE,
-                gl.FLOAT,
-                false,
-                ELEMENT_OFFSET,
-                VERTEX_OFFSET
-            );
-            gl.vertexAttribPointer(
-                this.quadShader.attributes.aColor,
-                COLOR_SIZE,
-                gl.FLOAT,
-                false,
-                ELEMENT_OFFSET,
-                COLOR_OFFSET
-            );
-            gl.vertexAttribPointer(
-                this.quadShader.attributes.aTexture,
-                TEXTURE_SIZE,
-                gl.FLOAT,
-                false,
-                ELEMENT_OFFSET,
-                TEXTURE_OFFSET
-            );
-            gl.vertexAttribPointer(
-                this.quadShader.attributes.aRegion,
-                REGION_SIZE,
-                gl.FLOAT,
-                false,
-                ELEMENT_OFFSET,
-                REGION_OFFSET
-            );
-
             this.reset();
-            this.setProjection(gl.canvas.width, gl.canvas.height);
+            this.setProjection(gl.canvas.width, gl.canvas.height, this.canvasScaleFactor);
 
             // Initialize clear color
             gl.clearColor(0.0, 0.0, 0.0, 1.0);
@@ -203,27 +165,93 @@
          * @function
          * @param {Number} w WebGL Canvas width
          * @param {Number} h WebGL Canvas height
+         * @param {Number} s WebGL Canvas scale
          */
-        setProjection : function (w, h) {
+        setProjection : function (w, h, s) {
+            
+            // cannot work so leave it as 1
+            s = 1;
+
             this.flush();
             this.gl.viewport(0, 0, w, h);
             this.uMatrix.setTransform(
-                2 / w,  0,      0,
-                0,      -2 / h, 0,
-                -1,     1,      1
+                (2 * s) / w,   0,            0,
+                0,            -(2 * s) / h,  0,
+                -s,            s,            1
             );
             // FIXME: Configure the projection matrix in `useShader`
             this.quadShader.uniforms.uMatrix = this.uMatrix.val;
+        },
+
+        addBatch: function () {
+            this.length.push(0);
+
+            var tmparr = [];
+            for (var i = 0; i < this.maxTextures; i++)
+            {
+                tmparr.push(undefined);
+            }
+            this.units.push(tmparr);
+
+            this.sb.push(this.gl.createBuffer());
+            this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.sb[0]);
+            this.gl.bufferData(
+                this.gl.ARRAY_BUFFER,
+                MAX_LENGTH * ELEMENT_OFFSET * ELEMENTS_PER_QUAD,
+                this.gl.STREAM_DRAW
+            );
+
+            this.sbSize.push(256);
+            this.sbIndex.push(0);
+
+            this.stream.push(new Float32Array(
+                256 * ELEMENT_SIZE * ELEMENTS_PER_QUAD
+            ));
+
+            // Bind attribute pointers for quad shader
+            this.gl.vertexAttribPointer(
+                this.quadShader.attributes.aVertex,
+                VERTEX_SIZE,
+                this.gl.FLOAT,
+                false,
+                ELEMENT_OFFSET,
+                VERTEX_OFFSET
+            );
+            this.gl.vertexAttribPointer(
+                this.quadShader.attributes.aColor,
+                COLOR_SIZE,
+                this.gl.FLOAT,
+                false,
+                ELEMENT_OFFSET,
+                COLOR_OFFSET
+            );
+            this.gl.vertexAttribPointer(
+                this.quadShader.attributes.aTexture,
+                TEXTURE_SIZE,
+                this.gl.FLOAT,
+                false,
+                ELEMENT_OFFSET,
+                TEXTURE_OFFSET
+            );
+            this.gl.vertexAttribPointer(
+                this.quadShader.attributes.aRegion,
+                REGION_SIZE,
+                this.gl.FLOAT,
+                false,
+                ELEMENT_OFFSET,
+                REGION_OFFSET
+            );
         },
 
         /**
          * @ignore
          */
         uploadTexture : function (texture, w, h, b, force) {
+            var batch = this.renderer.cache.getBatch(texture);
             var unit = this.renderer.cache.getUnit(texture);
-            if (!this.units[unit] || force) {
-                this.units[unit] = true;
-                me.video.shader.createTexture(
+
+            if (typeof this.units[batch][unit] === "undefined" || force) {
+                this.units[batch][unit] = me.video.shader.createTexture(
                     this.gl,
                     unit,
                     texture.source,
@@ -244,13 +272,22 @@
          * @ignore
          */
         reset : function () {
-            this.sbIndex = 0;
-            this.length = 0;
+
+            this.sbIndex = [];
+            this.length = [];
+            for (var j = 0; j < this.sb.length; j++)
+            {
+                this.gl.deleteBuffer(this.sb[j]);
+            }
+            this.sb = [];
+            this.sbSize = [];
+            this.stream = [];
+            this.units = [];
+            this.addBatch();
 
             var samplers = [];
 
             for (var i = 0; i < this.maxTextures; i++) {
-                this.units[i] = false;
                 samplers[i] = i;
             }
 
@@ -281,11 +318,12 @@
          * Resize the stream buffer, retaining its original contents
          * @ignore
          */
-        resizeSB : function () {
-            this.sbSize <<= 1;
-            var stream = new Float32Array(this.sbSize * ELEMENT_SIZE * ELEMENTS_PER_QUAD);
-            stream.set(this.stream);
-            this.stream = stream;
+        resizeSB : function (batch) {
+            batch = batch || 0;
+            this.sbSize[batch] <<= 1;
+            var stream = new Float32Array(this.sbSize[batch] * ELEMENT_SIZE * ELEMENTS_PER_QUAD);
+            stream.set(this.stream[batch]);
+            this.stream[batch] = stream;
         },
 
         /**
@@ -323,12 +361,18 @@
                 return;
             }
 
-            this.useShader(this.quadShader.handle);
-            if (this.length >= MAX_LENGTH) {
-                this.flush();
+            var batch = this.renderer.cache.getBatch(texture);
+            if ((batch + 1) > this.units.length)
+            {
+                this.addBatch();
             }
-            if (this.length >= this.sbSize) {
-                this.resizeSB();
+
+            this.useShader(this.quadShader.handle);
+            if (this.length[batch] >= MAX_LENGTH) {
+                this.flush(batch);
+            }
+            if (this.length[batch] >= this.sbSize[batch]) {
+                this.resizeSB(batch);
             }
 
             // Transform vertices
@@ -346,36 +390,36 @@
             }
 
             // Array index computation
-            var idx0 = this.sbIndex,
+            var idx0 = this.sbIndex[batch],
                 idx1 = idx0 + ELEMENT_SIZE,
                 idx2 = idx1 + ELEMENT_SIZE,
                 idx3 = idx2 + ELEMENT_SIZE;
 
             // Fill vertex buffer
             // FIXME: Pack each vertex vector into single float
-            this.stream[idx0 + VERTEX_ELEMENT + 0] = v0.x;
-            this.stream[idx0 + VERTEX_ELEMENT + 1] = v0.y;
-            this.stream[idx1 + VERTEX_ELEMENT + 0] = v1.x;
-            this.stream[idx1 + VERTEX_ELEMENT + 1] = v1.y;
-            this.stream[idx2 + VERTEX_ELEMENT + 0] = v2.x;
-            this.stream[idx2 + VERTEX_ELEMENT + 1] = v2.y;
-            this.stream[idx3 + VERTEX_ELEMENT + 0] = v3.x;
-            this.stream[idx3 + VERTEX_ELEMENT + 1] = v3.y;
+            this.stream[batch][idx0 + VERTEX_ELEMENT + 0] = v0.x;
+            this.stream[batch][idx0 + VERTEX_ELEMENT + 1] = v0.y;
+            this.stream[batch][idx1 + VERTEX_ELEMENT + 0] = v1.x;
+            this.stream[batch][idx1 + VERTEX_ELEMENT + 1] = v1.y;
+            this.stream[batch][idx2 + VERTEX_ELEMENT + 0] = v2.x;
+            this.stream[batch][idx2 + VERTEX_ELEMENT + 1] = v2.y;
+            this.stream[batch][idx3 + VERTEX_ELEMENT + 0] = v3.x;
+            this.stream[batch][idx3 + VERTEX_ELEMENT + 1] = v3.y;
 
             // Fill color buffer
             // FIXME: Pack color vector into single float
-            this.stream.set(color, idx0 + COLOR_ELEMENT);
-            this.stream.set(color, idx1 + COLOR_ELEMENT);
-            this.stream.set(color, idx2 + COLOR_ELEMENT);
-            this.stream.set(color, idx3 + COLOR_ELEMENT);
+            this.stream[batch].set(color, idx0 + COLOR_ELEMENT);
+            this.stream[batch].set(color, idx1 + COLOR_ELEMENT);
+            this.stream[batch].set(color, idx2 + COLOR_ELEMENT);
+            this.stream[batch].set(color, idx3 + COLOR_ELEMENT);
 
             // Fill texture index buffer
             // FIXME: Can the texture index be packed into another element?
             var unit = this.uploadTexture(texture);
-            this.stream[idx0 + TEXTURE_ELEMENT] =
-            this.stream[idx1 + TEXTURE_ELEMENT] =
-            this.stream[idx2 + TEXTURE_ELEMENT] =
-            this.stream[idx3 + TEXTURE_ELEMENT] = unit;
+            this.stream[batch][idx0 + TEXTURE_ELEMENT] =
+            this.stream[batch][idx1 + TEXTURE_ELEMENT] =
+            this.stream[batch][idx2 + TEXTURE_ELEMENT] =
+            this.stream[batch][idx3 + TEXTURE_ELEMENT] = unit;
 
             // Get the source texture region
             var region = texture.getRegion(key);
@@ -396,17 +440,17 @@
             // Fill texture coordinates buffer
             // FIXME: Pack each texture coordinate into single floats
             var stMap = region.stMap;
-            this.stream[idx0 + REGION_ELEMENT + 0] = stMap[0];
-            this.stream[idx0 + REGION_ELEMENT + 1] = stMap[1];
-            this.stream[idx1 + REGION_ELEMENT + 0] = stMap[2];
-            this.stream[idx1 + REGION_ELEMENT + 1] = stMap[1];
-            this.stream[idx2 + REGION_ELEMENT + 0] = stMap[0];
-            this.stream[idx2 + REGION_ELEMENT + 1] = stMap[3];
-            this.stream[idx3 + REGION_ELEMENT + 0] = stMap[2];
-            this.stream[idx3 + REGION_ELEMENT + 1] = stMap[3];
+            this.stream[batch][idx0 + REGION_ELEMENT + 0] = stMap[0];
+            this.stream[batch][idx0 + REGION_ELEMENT + 1] = stMap[1];
+            this.stream[batch][idx1 + REGION_ELEMENT + 0] = stMap[2];
+            this.stream[batch][idx1 + REGION_ELEMENT + 1] = stMap[1];
+            this.stream[batch][idx2 + REGION_ELEMENT + 0] = stMap[0];
+            this.stream[batch][idx2 + REGION_ELEMENT + 1] = stMap[3];
+            this.stream[batch][idx3 + REGION_ELEMENT + 0] = stMap[2];
+            this.stream[batch][idx3 + REGION_ELEMENT + 1] = stMap[3];
 
-            this.sbIndex += ELEMENT_SIZE * ELEMENTS_PER_QUAD;
-            this.length++;
+            this.sbIndex[batch] += ELEMENT_SIZE * ELEMENTS_PER_QUAD;
+            this.length[batch]++;
         },
 
         /**
@@ -415,28 +459,39 @@
          * @memberOf me.WebGLRenderer.Compositor
          * @function
          */
-        flush : function () {
-            if (this.length) {
+        flush : function (batch) {
+            batch = batch || 0;
+            if (this.length[batch]) {
                 var gl = this.gl;
 
+                // Bind textures
+                for (var i = 0; i < this.maxTextures; i++)
+                {
+                    gl.activeTexture(gl.TEXTURE0 + i);
+                    if (typeof this.units[batch][i] !== "undefined")
+                    {
+                        gl.bindTexture(gl.TEXTURE_2D, this.units[batch][i]);
+                    }
+                }
+
                 // Copy data into stream buffer
-                var len = this.length * ELEMENT_SIZE * ELEMENTS_PER_QUAD;
+                var len = this.length[batch] * ELEMENT_SIZE * ELEMENTS_PER_QUAD;
                 gl.bufferData(
                     gl.ARRAY_BUFFER,
-                    this.stream.subarray(0, len),
+                    this.stream[batch].subarray(0, len),
                     gl.STREAM_DRAW
                 );
 
                 // Draw the stream buffer
                 gl.drawElements(
                     gl.TRIANGLES,
-                    this.length * INDICES_PER_QUAD,
+                    this.length[batch] * INDICES_PER_QUAD,
                     gl.UNSIGNED_SHORT,
                     0
                 );
 
-                this.sbIndex = 0;
-                this.length = 0;
+                this.sbIndex[batch] = 0;
+                this.length[batch] = 0;
             }
         },
 
@@ -449,79 +504,83 @@
          * @param {Boolean} [open=false] Whether the line is open (true) or closed (false)
          */
         drawLine : function (points, open) {
-            this.useShader(this.lineShader.handle);
 
-            // Put vertex data into the stream buffer
-            var j = 0;
-            for (var i = 0; i < points.length; i++) {
-                if (!this.matrix.isIdentity()) {
-                    this.matrix.multiplyVector(points[i]);
-                }
-                this.stream[j++] = points[i].x;
-                this.stream[j++] = points[i].y;
-            }
+            // TODO: Implement drawLine
+            return;
 
-            var gl = this.gl;
+            // this.useShader(this.lineShader.handle);
 
-            // FIXME
-            this.lineShader.uniforms.uMatrix = this.uMatrix.val;
+            // // Put vertex data into the stream buffer
+            // var j = 0;
+            // for (var i = 0; i < points.length; i++) {
+            //     if (!this.matrix.isIdentity()) {
+            //         this.matrix.multiplyVector(points[i]);
+            //     }
+            //     this.stream[j++] = points[i].x;
+            //     this.stream[j++] = points[i].y;
+            // }
 
-            // Set the line color
-            this.lineShader.uniforms.uColor = this.color.glArray;
+            // var gl = this.gl;
 
-            // Copy data into the stream buffer
-            gl.bufferData(
-                gl.ARRAY_BUFFER,
-                this.stream.subarray(0, points.length * 2),
-                gl.STREAM_DRAW
-            );
+            // // FIXME
+            // this.lineShader.uniforms.uMatrix = this.uMatrix.val;
 
-            // FIXME: Configure vertex attrib pointers in `useShader`
-            gl.vertexAttribPointer(
-                this.lineShader.attributes.aVertex,
-                VERTEX_SIZE,
-                gl.FLOAT,
-                false,
-                0,
-                0
-            );
+            // // Set the line color
+            // this.lineShader.uniforms.uColor = this.color.glArray;
 
-            // Draw the stream buffer
-            gl.drawArrays(open ? gl.LINE_STRIP : gl.LINE_LOOP, 0, points.length);
+            // // Copy data into the stream buffer
+            // gl.bufferData(
+            //     gl.ARRAY_BUFFER,
+            //     this.stream.subarray(0, points.length * 2),
+            //     gl.STREAM_DRAW
+            // );
 
-            // FIXME: Configure vertex attrib pointers in `useShader`
-            gl.vertexAttribPointer(
-                this.quadShader.attributes.aVertex,
-                VERTEX_SIZE,
-                gl.FLOAT,
-                false,
-                ELEMENT_OFFSET,
-                VERTEX_OFFSET
-            );
-            gl.vertexAttribPointer(
-                this.quadShader.attributes.aColor,
-                COLOR_SIZE,
-                gl.FLOAT,
-                false,
-                ELEMENT_OFFSET,
-                COLOR_OFFSET
-            );
-            gl.vertexAttribPointer(
-                this.quadShader.attributes.aTexture,
-                TEXTURE_SIZE,
-                gl.FLOAT,
-                false,
-                ELEMENT_OFFSET,
-                TEXTURE_OFFSET
-            );
-            gl.vertexAttribPointer(
-                this.quadShader.attributes.aRegion,
-                REGION_SIZE,
-                gl.FLOAT,
-                false,
-                ELEMENT_OFFSET,
-                REGION_OFFSET
-            );
+            // // FIXME: Configure vertex attrib pointers in `useShader`
+            // gl.vertexAttribPointer(
+            //     this.lineShader.attributes.aVertex,
+            //     VERTEX_SIZE,
+            //     gl.FLOAT,
+            //     false,
+            //     0,
+            //     0
+            // );
+
+            // // Draw the stream buffer
+            // gl.drawArrays(open ? gl.LINE_STRIP : gl.LINE_LOOP, 0, points.length);
+
+            // // FIXME: Configure vertex attrib pointers in `useShader`
+            // gl.vertexAttribPointer(
+            //     this.quadShader.attributes.aVertex,
+            //     VERTEX_SIZE,
+            //     gl.FLOAT,
+            //     false,
+            //     ELEMENT_OFFSET,
+            //     VERTEX_OFFSET
+            // );
+            // gl.vertexAttribPointer(
+            //     this.quadShader.attributes.aColor,
+            //     COLOR_SIZE,
+            //     gl.FLOAT,
+            //     false,
+            //     ELEMENT_OFFSET,
+            //     COLOR_OFFSET
+            // );
+            // gl.vertexAttribPointer(
+            //     this.quadShader.attributes.aTexture,
+            //     TEXTURE_SIZE,
+            //     gl.FLOAT,
+            //     false,
+            //     ELEMENT_OFFSET,
+            //     TEXTURE_OFFSET
+            // );
+            // gl.vertexAttribPointer(
+            //     this.quadShader.attributes.aRegion,
+            //     REGION_SIZE,
+            //     gl.FLOAT,
+            //     false,
+            //     ELEMENT_OFFSET,
+            //     REGION_OFFSET
+            // );
         },
 
         /**
@@ -532,7 +591,10 @@
          * @function
          */
         clear : function () {
-            this.flush();
+            for (var i = 0; i < this.compositor.units.length; i++)
+            {
+                this.flush(i);
+            }
             this.gl.clear(this.gl.COLOR_BUFFER_BIT);
         }
     });

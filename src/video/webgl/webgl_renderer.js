@@ -34,6 +34,8 @@
         init : function (c, width, height, options) {
             this._super(me.Renderer, "init", [c, width, height, options]);
 
+            this.canvasScaleFactor = options.scale;
+
             /**
              * The WebGL context
              * @name gl
@@ -87,7 +89,7 @@
             // set default mode
             this.setBlendMode(this.gl, options.blendMode);
 
-            // Create a texture cache
+            // Create an array for texture cache
             this.cache = new me.Renderer.TextureCache(
                 this.compositor.maxTextures
             );
@@ -230,7 +232,10 @@
          * @function
          */
         flush : function () {
-            this.compositor.flush();
+            for (var i = 0; i < this.compositor.units.length; i++)
+            {
+                this.compositor.flush(i);
+            }
         },
 
         /**
@@ -505,7 +510,7 @@
                 this.canvas.style.height = h + "px";
             }
 
-            this.compositor.setProjection(this.canvas.width, this.canvas.height);
+            this.compositor.setProjection(this.canvas.width, this.canvas.height, this.canvasScaleFactor);
         },
 
         /**

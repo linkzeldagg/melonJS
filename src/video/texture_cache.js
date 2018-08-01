@@ -15,9 +15,12 @@
          * @ignore
          */
         init : function (max_size) {
-            this.cache = new Map();
-            this.units = new Map();
+            this.cache = [];
+            this.cache.push(new Map());
+            this.units = [];
+            this.units.push(new Map());
             this.max_size = max_size || Infinity;
+
             this.reset();
         },
 
@@ -25,29 +28,58 @@
          * @ignore
          */
         reset : function () {
-            this.cache.clear();
-            this.units.clear();
-            this.length = 0;
+            this.cache.forEach(
+                function(e)
+                {
+                    e.clear();
+                }
+            );
+            this.units.forEach(
+                function(e)
+                {
+                    e.clear();
+                }
+            );
+            
+            this.length = [0];
+            this.addIndex = 0;
         },
 
         /**
          * @ignore
          */
         validate : function () {
-            if (this.length >= this.max_size) {
+            if (this.length[this.addIndex] >= this.max_size) {
                 // TODO: Merge textures instead of throwing an exception
-                throw new me.video.Error(
-                    "Texture cache overflow: " + this.max_size +
-                    " texture units available."
-                );
+                // throw new me.video.Error(
+                //     "Texture cache overflow: " + this.max_size +
+                //     " texture units available."
+                // );
+                this.addIndex ++;
+                this.cache.push(new Map());
+                this.units.push(new Map());
+                this.length.push(0);
+                return false;
             }
+            return true;
+        },
+
+        contains: function(image) {
+            for (var i = 0; i < this.cache.length; i++)
+            {
+                if (this.cache[i].has(image))
+                {
+                    return true;
+                }
+            }
+            return false;
         },
 
         /**
          * @ignore
          */
         get : function (image, atlas) {
-            if (!this.cache.has(image)) {
+            if (!this.contains(image)) {
                 if (!atlas) {
                     atlas = me.video.renderer.Texture.prototype.createAtlas.apply(
                         me.video.renderer.Texture.prototype,
@@ -56,7 +88,14 @@
                 }
                 this.put(image, new me.video.renderer.Texture(atlas, image, false));
             }
-            return this.cache.get(image);
+
+            for (var i = 0; i < this.cache.length; i++)
+            {
+                if (this.cache[i].has(image))
+                {
+                    return this.cache[i].get(image);
+                }
+            }
         },
 
         /**
@@ -64,15 +103,34 @@
          */
         put : function (image, texture) {
             this.validate();
-            this.cache.set(image, texture);
-            this.units.set(texture, this.length++);
+            this.cache[this.addIndex].set(image, texture);
+            this.units[this.addIndex].set(texture, this.length[this.addIndex]++);
+        },
+
+        /**
+         * @ignore
+         */
+        getBatch : function (texture) {
+            for (var i = 0; i < this.units.length; i++)
+            {
+                if (this.units[i].has(texture))
+                {
+                    return i;
+                }
+            }
         },
 
         /**
          * @ignore
          */
         getUnit : function (texture) {
-            return this.units.get(texture);
+            for (var i = 0; i < this.units.length; i++)
+            {
+                if (this.units[i].has(texture))
+                {
+                    return this.units[i].get(texture);
+                }
+            }
         }
     });
 
